@@ -9,6 +9,18 @@ from __future__ import annotations
 import os
 import tempfile
 from functools import lru_cache
+import shutil
+
+# Some environments (GUI-launched apps, services, or shells started before Homebrew
+# was installed) don't have Homebrew's bin on PATH. Whisper invokes the `ffmpeg`
+# binary via subprocess; if it's not on PATH the call will raise FileNotFoundError.
+# Try to make ffmpeg discoverable by prepending common Homebrew prefixes if needed.
+if shutil.which("ffmpeg") is None:
+    for prefix in ("/opt/homebrew/bin", "/usr/local/bin"):
+        if os.path.isdir(prefix):
+            os.environ["PATH"] = prefix + os.pathsep + os.environ.get("PATH", "")
+            if shutil.which("ffmpeg"):
+                break
 
 
 @lru_cache(maxsize=1)
