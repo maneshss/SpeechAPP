@@ -1,0 +1,4 @@
+# Minimal dependencies required to run the test suite in CI.
+# Keep this small to avoid heavy native builds (whisper/torch/ffmpeg) in CI.
+rapidfuzz>=3.6
+pytest>=7.0

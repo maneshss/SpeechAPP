@@ -56,3 +56,25 @@ SpeechAPP/
 - **Persistent progress**: write `rs.export_history()` to SQLite at the end of each session to track improvement over time.
 - **Tune comparison thresholds**: the fuzzy threshold is 85 in `core/compare.py`. Lower it (e.g. 75) if you want to be more lenient with mispronunciations.
 - **Try other ASR**: swap `core/stt.py` for `vosk` (offline, lighter) or Google Cloud Speech if Whisper struggles with your child's voice.
+
+## Development
+
+Quick steps to get a reproducible development environment and run tests locally:
+
+```bash
+# Create and activate a virtualenv (recommended)
+python -m venv .venv
+source .venv/bin/activate
+
+# Install runtime deps for development. The full requirements.txt includes
+# optional heavy packages (Whisper / torch). For fast test runs use the
+# CI requirements file which contains just what's needed for tests.
+pip install -r requirements-ci.txt
+
+# Run the test suite
+python -m pytest -q
+```
+
+If you prefer to install everything (for running the app with Whisper),
+run `pip install -r requirements.txt` instead. On macOS you must also
+install `ffmpeg` (homebrew) before running Whisper.

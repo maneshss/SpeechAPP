@@ -22,7 +22,7 @@ import random
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 from .compare import CompareResult, compare_phrase, compare_word
 

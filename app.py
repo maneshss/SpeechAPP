@@ -77,7 +77,7 @@ def transcribe(audio_bytes: bytes) -> str:
 # ---------- UI ----------
 def render_header(rs: ReadingSession) -> None:
     col1, col2, col3 = st.columns([2, 1, 1])
-    col1.markdown(f"### Reading Buddy")
+    col1.markdown("### Reading Buddy")
     col2.metric("Level", rs.level)
     col3.metric("Streak", rs.consecutive_passes)
 
