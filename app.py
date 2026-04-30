@@ -30,6 +30,7 @@ def write_debug_event(event: dict) -> None:
         # Don't let logging break the app
         pass
 
+
 # local imports
 
 # Optional imports — fail gracefully so the UI still loads if a dep is missing.
@@ -116,7 +117,9 @@ def render_phrase_screen(rs: ReadingSession) -> None:
     st.caption("Read the phrase out loud, then tap the mic.")
     audio = record_audio(key=f"phrase_{rs.current_phrase}")
     # Simulation helper for debugging: allow manual text entry to bypass recording
-    sim_phrase = st.text_input("Simulate phrase transcription (debug)", key="sim_phrase")
+    sim_phrase = st.text_input(
+        "Simulate phrase transcription (debug)", key="sim_phrase"
+    )
     if st.button("Simulate phrase", key="sim_phrase_btn") and sim_phrase:
         spoken = sim_phrase
         st.write(f"_Simulated I heard:_ **{spoken}**")
@@ -146,18 +149,26 @@ def render_phrase_screen(rs: ReadingSession) -> None:
 def render_word_screen(rs: ReadingSession) -> None:
     word = rs.current_word
     total = len(rs.current_phrase.split())
-    st.progress((rs.current_word_index) / max(1, total),
-                text=f"Word {rs.current_word_index + 1} of {total}")
+    st.progress(
+        (rs.current_word_index) / max(1, total),
+        text=f"Word {rs.current_word_index + 1} of {total}",
+    )
     st.markdown(
-        f"<h1 style='text-align:center; font-size:96px; margin:40px 0;'>"
-        f"{word}</h1>",
+        f"<h1 style='text-align:center; font-size:96px; margin:40px 0;'>{word}</h1>",
         unsafe_allow_html=True,
     )
     st.caption(f"Phrase: *{rs.current_phrase}* — say just this word.")
-    audio = record_audio(key=f"word_{word}_{rs.current_word_index}_{rs.current_word_attempts}")
+    audio = record_audio(
+        key=f"word_{word}_{rs.current_word_index}_{rs.current_word_attempts}"
+    )
     # Simulation helper for debugging: manual word input
-    sim_word = st.text_input("Simulate word transcription", key=f"sim_word_{rs.current_word_index}")
-    if st.button("Simulate word", key=f"sim_word_btn_{rs.current_word_index}") and sim_word:
+    sim_word = st.text_input(
+        "Simulate word transcription", key=f"sim_word_{rs.current_word_index}"
+    )
+    if (
+        st.button("Simulate word", key=f"sim_word_btn_{rs.current_word_index}")
+        and sim_word
+    ):
         spoken = sim_word
         st.write(f"_Simulated I heard:_ **{spoken}**")
         result = rs.submit_word_attempt(spoken)
@@ -237,8 +248,7 @@ with st.sidebar:
         st.rerun()
     st.write("**Level**:", rs.level)
     st.write("**State**:", rs.state.value)
-    st.write("**Phrases loaded**:",
-             sum(len(v) for v in rs.phrases_by_level.values()))
+    st.write("**Phrases loaded**:", sum(len(v) for v in rs.phrases_by_level.values()))
 
 render_header(rs)
 
