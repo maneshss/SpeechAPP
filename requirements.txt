@@ -2,21 +2,21 @@
 streamlit>=1.30
 streamlit-mic-recorder>=0.0.8
 
-# Speech-to-text (pick one path; Whisper is the default here)
-openai-whisper>=20231117
-# Whisper depends on torch + ffmpeg. ffmpeg must be installed at the OS level:
+# Speech-to-text (Whisper via openai-whisper; requires ffmpeg at OS level)
 #   macOS:   brew install ffmpeg
 #   Ubuntu:  sudo apt-get install ffmpeg
+openai-whisper>=20231117
 
 # Text comparison + NLP
-rapidfuzz>=3.6        # fast fuzzy string matching
-pronouncing>=0.2.0    # CMU pronouncing dictionary (phonemes, syllables)
-wordfreq>=3.0         # word-frequency lookup (used for difficulty scoring)
+rapidfuzz>=3.6        # fast fuzzy / Jaro-Winkler string matching
+pronouncing>=0.2.0    # CMU Pronouncing Dictionary (phonemes, syllable counts)
+wordfreq>=3.0         # word-frequency lookup (difficulty scoring)
 metaphone>=0.6        # double-metaphone phonetic encoding
 
 # Data + utilities
 pandas>=2.0
 numpy>=1.24
+openpyxl>=3.1         # read/write .xlsx corpus files
 
 # Optional: text-to-speech for the "hear the phrase" button
 gTTS>=2.4
