@@ -5,8 +5,14 @@ Run with:
 
 Notes:
     - First run downloads the Whisper model (a few hundred MB for base.en).
-    - Requires ffmpeg installed at the OS level.
-    - Corpus is loaded from data/Corpus word.xlsx (falls back to phrases.csv).
+    - Requires ffmpeg at the OS level (brew install ffmpeg / apt install ffmpeg).
+    - Corpus loaded from data/Corpus word.xlsx (falls back to phrases.csv).
+
+Screen flow (phrase):
+    LISTEN  →  RECORD  →  CHECKING  →  RESULT  →  (next phrase)
+
+Screen flow (word-by-word):
+    LISTEN  →  RECORD  →  RESULT  →  (next word)
 """
 
 from __future__ import annotations
@@ -24,7 +30,7 @@ from core.corpus import LEVEL_LABELS
 LOG_PATH = Path(__file__).parent / "debug_events.log"
 
 # ---------------------------------------------------------------------------
-# Optional dependencies — fail gracefully
+# Optional dependencies
 # ---------------------------------------------------------------------------
 try:
     from streamlit_mic_recorder import mic_recorder
@@ -38,22 +44,8 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
-# Logging helper
-# ---------------------------------------------------------------------------
-
-def write_debug_event(event: dict) -> None:
-    try:
-        record = {"ts": datetime.utcnow().isoformat() + "Z", **event}
-        with open(LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-
-
-# ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
-
 st.set_page_config(page_title="SpeakUp!", page_icon="🗣️", layout="centered")
 
 
@@ -68,51 +60,68 @@ def get_session() -> ReadingSession:
 
 
 def reset_session() -> None:
+    # Keep only keys that are not phase/result/audio caches
+    keep = {"rs"}
+    for k in list(st.session_state.keys()):
+        if k not in keep:
+            del st.session_state[k]
     st.session_state.pop("rs", None)
-    st.session_state.pop("last_audio", None)
 
 
 # ---------------------------------------------------------------------------
-# Audio helpers
+# TTS helper  (cached per text so gTTS is only called once per sentence)
 # ---------------------------------------------------------------------------
 
-def record_audio(key: str) -> bytes | None:
-    counter_name = "_mic_counter"
-    if counter_name not in st.session_state:
-        st.session_state[counter_name] = 0
-    st.session_state[counter_name] += 1
-    unique_key = f"{key}_{st.session_state[counter_name]}"
-
-    if mic_recorder is None:
-        st.warning(
-            "`streamlit-mic-recorder` is not installed. "
-            "Run `pip install streamlit-mic-recorder` to enable recording."
-        )
+@st.cache_data(show_spinner=False)
+def _tts_bytes(text: str) -> bytes | None:
+    """Return MP3 audio bytes for text using gTTS, or None on failure."""
+    try:
+        from gtts import gTTS
+        import io
+        tts = gTTS(text=text, lang="en", slow=True)   # slow=True for clarity
+        buf = io.BytesIO()
+        tts.write_to_fp(buf)
+        return buf.getvalue()
+    except Exception:
         return None
 
+
+# ---------------------------------------------------------------------------
+# Microphone recorder wrapper
+# ---------------------------------------------------------------------------
+
+def _record_audio(key: str) -> bytes | None:
+    """Show the mic recorder widget; return audio bytes when recording ends."""
+    if mic_recorder is None:
+        return None
+
+    # Append a counter so each rerun gets a fresh widget instance
+    if "_mic_ctr" not in st.session_state:
+        st.session_state["_mic_ctr"] = 0
+    st.session_state["_mic_ctr"] += 1
+    widget_key = f"{key}_{st.session_state['_mic_ctr']}"
+
     audio = mic_recorder(
-        start_prompt="🎤 Tap to record",
-        stop_prompt="⏹ Stop",
+        start_prompt="🎤  Tap to start recording",
+        stop_prompt="⏹  Tap to stop",
         just_once=True,
         use_container_width=True,
-        key=unique_key,
+        key=widget_key,
     )
     if audio and "bytes" in audio:
-        st.session_state["_last_audio_len"] = len(audio.get("bytes", b""))
         return audio["bytes"]
     return None
 
 
-def transcribe(audio_bytes: bytes) -> str:
+def _do_transcribe(audio_bytes: bytes) -> str:
+    """Transcribe audio bytes; raises on failure."""
     if transcribe_bytes is None:
-        st.error("Whisper is not installed. Run `pip install openai-whisper`.")
-        return ""
-    with st.spinner("Listening…"):
-        return transcribe_bytes(audio_bytes)
+        raise RuntimeError("Whisper is not installed. Run: pip install openai-whisper")
+    return transcribe_bytes(audio_bytes)
 
 
 # ---------------------------------------------------------------------------
-# UI helpers
+# Shared UI widgets
 # ---------------------------------------------------------------------------
 
 _TIER_COLOUR = {1: "#4CAF50", 2: "#FF9800", 3: "#F44336"}
@@ -124,55 +133,64 @@ def _tier_badge(level: int) -> str:
     colour = _TIER_COLOUR.get(level, "#888")
     return (
         f"<span style='background:{colour};color:white;"
-        f"padding:3px 10px;border-radius:12px;font-size:14px;'>"
-        f"{_TIER_EMOJI.get(level,'')} {label}</span>"
+        f"padding:4px 12px;border-radius:12px;font-size:14px;font-weight:bold;'>"
+        f"{_TIER_EMOJI.get(level, '')} {label}</span>"
     )
 
 
-def render_header(rs: ReadingSession) -> None:
-    col1, col2, col3 = st.columns([2, 1, 1])
-    col1.markdown("### 🗣️ SpeakUp!")
-    col2.markdown(_tier_badge(rs.level), unsafe_allow_html=True)
-    col3.metric("Streak", rs.consecutive_passes)
-
-
-def _handle_spoken(spoken: str, rs: ReadingSession, mode: str) -> None:
-    """Process a transcribed utterance in phrase or retry mode."""
-    st.write(f"_I heard:_ **{spoken}**")
-    result = rs.submit_phrase_attempt(spoken)
-
-    alignment = rs.last_alignment
-    if alignment:
-        _render_alignment(alignment)
-
-    if result.passed:
-        st.success(f"Great job! ({result.method}, score {result.score:.0f})")
-    else:
-        st.warning("Let's try one word at a time.")
-    st.rerun()
+def _step_indicator(current: int) -> None:
+    """Render a 3-step progress strip: Listen → Record → Result."""
+    labels = ["🎧 Listen", "🎤 Record", "✅ Result"]
+    cols = st.columns(3)
+    for i, (col, label) in enumerate(zip(cols, labels)):
+        step = i + 1
+        if step < current:
+            col.markdown(
+                f"<div style='text-align:center;color:#aaa;font-size:13px;'>"
+                f"<s>{label}</s></div>",
+                unsafe_allow_html=True,
+            )
+        elif step == current:
+            col.markdown(
+                f"<div style='text-align:center;font-weight:bold;font-size:14px;"
+                f"color:#1565C0;border-bottom:3px solid #1565C0;padding-bottom:4px;'>"
+                f"{label}</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            col.markdown(
+                f"<div style='text-align:center;color:#bbb;font-size:13px;'>"
+                f"{label}</div>",
+                unsafe_allow_html=True,
+            )
+    st.write("")   # small gap
 
 
 def _render_alignment(alignment) -> None:
-    """Show a colour-coded word-by-word alignment breakdown."""
+    """Colour-coded word-level alignment breakdown."""
     _colour = {
-        "correct":          "#4CAF50",
-        "mispronunciation": "#FF9800",
-        "substitution":     "#F44336",
-        "omission":         "#9E9E9E",
-        "insertion":        "#2196F3",
+        "correct":          "#2E7D32",
+        "mispronunciation": "#E65100",
+        "substitution":     "#C62828",
+        "omission":         "#757575",
+        "insertion":        "#1565C0",
     }
     parts = []
     for wa in alignment.alignments:
-        c = _colour.get(wa.error_type, "#888")
+        c = _colour.get(wa.error_type, "#555")
         label = wa.target if wa.target else f"[+{wa.spoken}]"
         tooltip = wa.error_type
         if wa.error_type not in ("correct", "omission", "insertion"):
-            tooltip += f" (heard: '{wa.spoken}', sim {wa.phoneme_sim:.2f})"
+            tooltip += f" — heard '{wa.spoken}' (sim {wa.phoneme_sim:.2f})"
         parts.append(
             f"<span title='{tooltip}' style='color:{c};font-weight:bold;"
-            f"margin:0 3px;font-size:18px;'>{label}</span>"
+            f"margin:0 4px;font-size:22px;'>{label}</span>"
         )
-    st.markdown(" ".join(parts), unsafe_allow_html=True)
+
+    st.markdown(
+        "<div style='text-align:center;margin:12px 0;'>" + " ".join(parts) + "</div>",
+        unsafe_allow_html=True,
+    )
 
     bd = alignment.error_breakdown
     if bd:
@@ -182,105 +200,403 @@ def _render_alignment(alignment) -> None:
     st.caption(f"Phoneme accuracy: {alignment.phoneme_accuracy:.0%}")
 
 
-def render_phrase_screen(rs: ReadingSession) -> None:
+def render_header(rs: ReadingSession) -> None:
+    c1, c2, c3 = st.columns([2, 1, 1])
+    c1.markdown("### 🗣️ SpeakUp!")
+    c2.markdown(_tier_badge(rs.level), unsafe_allow_html=True)
+    c3.metric("Streak 🔥", rs.consecutive_passes)
+
+
+# ---------------------------------------------------------------------------
+# Phrase screen  (phases: listen → record → checking → result)
+# ---------------------------------------------------------------------------
+
+def render_phrase_screen(rs: ReadingSession, is_retry: bool = False) -> None:
+    phrase = rs.current_phrase
+
+    # Per-phrase session state keys
+    pk   = f"_pp_{phrase}"    # phase key
+    ak   = f"_pa_{phrase}"    # raw audio bytes
+    sk   = f"_ps_{phrase}"    # simulated text
+    rk   = f"_pr_{phrase}"    # saved result dict
+
+    phase = st.session_state.get(pk, "listen")
+
+    # ---- Large sentence display (always visible) ----
     st.markdown(
-        f"<h1 style='text-align:center;font-size:64px;margin:40px 0;'>"
-        f"{rs.current_phrase}</h1>",
+        f"<h1 style='text-align:center;font-size:58px;line-height:1.2;"
+        f"margin:24px 0;'>{phrase}</h1>",
         unsafe_allow_html=True,
     )
-    st.caption("Read the sentence out loud, then tap the mic.")
 
-    audio = record_audio(key=f"phrase_{rs.current_phrase}")
-    if audio:
-        st.write("DEBUG: recorded bytes:", len(audio))
-        try:
-            spoken = transcribe(audio)
-        except Exception as e:
-            st.error("Transcription error")
-            st.exception(e)
+    if is_retry:
+        st.info("🔁 You've practised each word. Now try the whole sentence again!")
+
+    st.markdown("---")
+
+    # ===========================================================
+    # Phase 1: LISTEN
+    # ===========================================================
+    if phase == "listen":
+        _step_indicator(1)
+        st.markdown(
+            "<h3 style='text-align:center;'>🎧 Listen to the sentence</h3>",
+            unsafe_allow_html=True,
+        )
+
+        tts = _tts_bytes(phrase)
+        if tts:
+            st.audio(tts, format="audio/mp3", autoplay=True)
+            st.caption(
+                "The sentence is playing. Listen carefully, then click **I'm ready** when done."
+            )
+        else:
+            st.warning(
+                "⚠️ Audio unavailable (no internet / gTTS not installed). "
+                "Read the sentence above, then click the button below."
+            )
+
+        col_play, col_go = st.columns(2)
+        if tts and col_play.button("🔊 Play again", use_container_width=True):
+            st.audio(tts, format="audio/mp3", autoplay=True)
+            st.rerun()
+
+        if col_go.button(
+            "✅ I heard it — I'm ready to speak!",
+            use_container_width=True,
+            type="primary",
+        ):
+            st.session_state[pk] = "record"
+            st.rerun()
+
+    # ===========================================================
+    # Phase 2: RECORD
+    # ===========================================================
+    elif phase == "record":
+        _step_indicator(2)
+
+        st.markdown(
+            "<h3 style='text-align:center;color:#1565C0;'>"
+            "🎤 Now say the sentence out loud!</h3>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            "<p style='text-align:center;color:#555;font-size:16px;'>"
+            "Tap the button below to start recording, then tap again to stop.</p>",
+            unsafe_allow_html=True,
+        )
+
+        if mic_recorder is None:
+            st.error(
+                "🎙️ Microphone not available. "
+                "Install it with: `pip install streamlit-mic-recorder`, "
+                "or use the text box below."
+            )
+        else:
+            audio = _record_audio(key=f"phrase_rec_{phrase}")
+            if audio:
+                # Recording received → move to checking
+                st.session_state[ak] = audio
+                st.session_state[pk] = "checking"
+                st.rerun()
+
+        # Replay button
+        tts = _tts_bytes(phrase)
+        if tts:
+            with st.expander("🔊 Hear the sentence again"):
+                st.audio(tts, format="audio/mp3", autoplay=False)
+
+        # Text simulation fallback
+        with st.expander("⌨️ No mic? Type your answer here"):
+            sim = st.text_input(
+                "Type what you would say:",
+                key=f"sim_input_{phrase}",
+                placeholder="e.g. The cat sat",
+            )
+            if st.button("Submit typed answer", key=f"sim_btn_{phrase}") and sim:
+                st.session_state[sk] = sim
+                st.session_state[pk] = "checking"
+                st.rerun()
+
+    # ===========================================================
+    # Phase 3: CHECKING  (transcribe + submit — runs only once)
+    # ===========================================================
+    elif phase == "checking":
+        _step_indicator(3)
+
+        # Guard: if result is already saved, skip to result
+        if rk in st.session_state:
+            st.session_state[pk] = "result"
+            st.rerun()
             return
-        _handle_spoken(spoken, rs, "phrase")
 
-    # Simulation helper
-    with st.expander("Simulate (debug / no mic)"):
-        sim_text = st.text_input("Type what you'd say:", key="sim_phrase")
-        if st.button("Submit simulation", key="sim_phrase_btn") and sim_text:
-            _handle_spoken(sim_text, rs, "phrase")
+        sim_text  = st.session_state.pop(sk, None)
+        audio_buf = st.session_state.get(ak)
 
+        st.markdown(
+            "<h3 style='text-align:center;'>⏳ Checking your answer…</h3>",
+            unsafe_allow_html=True,
+        )
+        st.progress(0.6, text="Processing your recording, please wait…")
+
+        if sim_text:
+            spoken = sim_text
+        elif audio_buf:
+            try:
+                with st.spinner("🔍 Transcribing your voice…"):
+                    spoken = _do_transcribe(audio_buf)
+            except Exception as exc:
+                st.error(f"Transcription failed: {exc}")
+                if st.button("⬅️ Try recording again"):
+                    st.session_state.pop(ak, None)
+                    st.session_state[pk] = "record"
+                    st.rerun()
+                return
+        else:
+            st.error("No recording found. Please try again.")
+            if st.button("⬅️ Go back"):
+                st.session_state[pk] = "record"
+                st.rerun()
+            return
+
+        # Submit to session and cache result
+        result    = rs.submit_phrase_attempt(spoken)
+        alignment = rs.last_alignment
+
+        st.session_state[rk] = {
+            "spoken":    spoken,
+            "passed":    result.passed,
+            "method":    result.method,
+            "score":     result.score,
+            "alignment": alignment,
+        }
+        st.session_state.pop(ak, None)
+        st.session_state[pk] = "result"
+        st.rerun()
+
+    # ===========================================================
+    # Phase 4: RESULT
+    # ===========================================================
+    elif phase == "result":
+        saved = st.session_state.get(rk)
+        if not saved:
+            # Fallback if state is inconsistent
+            st.session_state[pk] = "listen"
+            st.rerun()
+            return
+
+        _step_indicator(3)
+
+        st.markdown(
+            f"<p style='text-align:center;font-size:18px;color:#555;'>"
+            f"You said: <strong>{saved['spoken']}</strong></p>",
+            unsafe_allow_html=True,
+        )
+
+        if saved["passed"]:
+            st.success(
+                f"🎉 **Well done!**  ({saved['method']} match, "
+                f"score {saved['score']:.0f}/100)"
+            )
+        else:
+            st.warning("⚠️ Not quite — let's practise each word now.")
+
+        alignment = saved.get("alignment")
+        if alignment and alignment.alignments:
+            _render_alignment(alignment)
+
+        st.markdown("")
+        if st.button("Continue ➡️", use_container_width=True, type="primary"):
+            # Clean up all phase keys for this phrase
+            for key in [pk, rk, ak, sk]:
+                st.session_state.pop(key, None)
+            st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Word screen  (phases: listen → record → result)
+# ---------------------------------------------------------------------------
 
 def render_word_screen(rs: ReadingSession) -> None:
-    word = rs.current_word
+    word  = rs.current_word
     words = rs.current_phrase.split()
     total = len(words)
 
+    # Progress bar
     st.progress(
         rs.current_word_index / max(1, total),
         text=f"Word {rs.current_word_index + 1} of {total}",
     )
+    st.caption(f"Full sentence: *{rs.current_phrase}*")
+
+    # Per-word session state keys (word index prevents cross-word collisions)
+    wid = f"{rs.current_word_index}_{rs.current_word_attempts}"
+    pk  = f"_wp_{wid}"     # phase
+    ak  = f"_wa_{wid}"     # audio
+    sk  = f"_ws_{wid}"     # sim text
+    rk  = f"_wr_{wid}"     # result
+
+    phase = st.session_state.get(pk, "listen")
+
+    # ---- Large word display ----
     st.markdown(
-        f"<h1 style='text-align:center;font-size:96px;margin:40px 0;'>{word}</h1>",
+        f"<h1 style='text-align:center;font-size:96px;font-weight:900;"
+        f"margin:16px 0;'>{word}</h1>",
         unsafe_allow_html=True,
     )
-    st.caption(f"Phrase: *{rs.current_phrase}* — say just this word.")
 
-    # Word alternatives for practice
+    # Word alternatives
     alts = rs.word_alternatives(word)
     if alts:
-        st.info(f"🔄 Similar-sounding words to practise: **{', '.join(alts)}**")
+        st.info(f"🔄 Similar-sounding practice words: **{', '.join(alts)}**")
 
-    audio = record_audio(
-        key=f"word_{word}_{rs.current_word_index}_{rs.current_word_attempts}"
-    )
-    if audio:
-        st.write("DEBUG: recorded bytes:", len(audio))
-        try:
-            spoken = transcribe(audio)
-            st.write(f"_I heard:_ **{spoken}**")
-        except Exception as e:
-            st.error("Transcription error")
-            st.exception(e)
-            return
-        _process_word(spoken, rs)
+    st.markdown("---")
 
-    # Simulation helper
-    with st.expander("Simulate (debug / no mic)"):
-        sim_w = st.text_input("Type the word:", key=f"sim_word_{rs.current_word_index}")
-        if st.button("Submit simulation", key=f"sim_word_btn_{rs.current_word_index}") and sim_w:
-            _process_word(sim_w, rs)
+    # ===========================================================
+    # Phase 1: LISTEN
+    # ===========================================================
+    if phase == "listen":
+        _step_indicator(1)
 
+        st.markdown(
+            "<h4 style='text-align:center;'>🎧 Listen to the word</h4>",
+            unsafe_allow_html=True,
+        )
 
-def _process_word(spoken: str, rs: ReadingSession) -> None:
-    result = rs.submit_word_attempt(spoken)
-    st.write(f"_I heard:_ **{spoken}**")
-    if result.passed:
-        st.success(f"Yes! ({result.method})")
-    else:
-        remaining = rs.max_word_attempts - rs.current_word_attempts
-        if remaining > 0:
-            st.warning(f"Try again — {remaining} attempt(s) left.")
+        tts = _tts_bytes(word)
+        if tts:
+            st.audio(tts, format="audio/mp3", autoplay=True)
+            st.caption("Listen, then click when ready to repeat it.")
         else:
-            st.info("That's okay, let's keep going.")
-    st.rerun()
+            st.warning("Audio unavailable — read the word above.")
+
+        col_play, col_go = st.columns(2)
+        if tts and col_play.button("🔊 Play again", key=f"wp_play_{wid}", use_container_width=True):
+            st.audio(tts, format="audio/mp3", autoplay=True)
+            st.rerun()
+
+        if col_go.button(
+            "✅ I'm ready to say it!",
+            key=f"wp_ready_{wid}",
+            use_container_width=True,
+            type="primary",
+        ):
+            st.session_state[pk] = "record"
+            st.rerun()
+
+    # ===========================================================
+    # Phase 2: RECORD
+    # ===========================================================
+    elif phase == "record":
+        _step_indicator(2)
+
+        remaining = rs.max_word_attempts - rs.current_word_attempts
+        st.markdown(
+            f"<h4 style='text-align:center;color:#1565C0;'>"
+            f"🎤 Say the word — {remaining} attempt(s) left</h4>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            "<p style='text-align:center;color:#555;'>Tap to record, tap again to stop.</p>",
+            unsafe_allow_html=True,
+        )
+
+        if mic_recorder is None:
+            st.error("Microphone not available. Use the text box below.")
+        else:
+            audio = _record_audio(key=f"word_rec_{wid}")
+            if audio:
+                st.session_state[ak] = audio
+                st.session_state[pk] = "result"
+                st.rerun()
+
+        tts = _tts_bytes(word)
+        if tts:
+            with st.expander("🔊 Hear the word again"):
+                st.audio(tts, format="audio/mp3", autoplay=False)
+
+        with st.expander("⌨️ No mic? Type the word"):
+            sim = st.text_input("", key=f"ws_input_{wid}", placeholder=f"Type '{word}'")
+            if st.button("Submit", key=f"ws_btn_{wid}") and sim:
+                st.session_state[sk] = sim
+                st.session_state[pk] = "result"
+                st.rerun()
+
+    # ===========================================================
+    # Phase 3: RESULT  (transcribe inline, show feedback, advance)
+    # ===========================================================
+    elif phase == "result":
+        _step_indicator(3)
+
+        # Avoid re-processing on subsequent reruns
+        if rk not in st.session_state:
+            sim_text  = st.session_state.pop(sk, None)
+            audio_buf = st.session_state.pop(ak, None)
+
+            with st.spinner("🔍 Checking your word…"):
+                if sim_text:
+                    spoken = sim_text
+                elif audio_buf:
+                    try:
+                        spoken = _do_transcribe(audio_buf)
+                    except Exception as exc:
+                        st.error(f"Transcription failed: {exc}")
+                        if st.button("⬅️ Try again", key=f"wr_retry_{wid}"):
+                            st.session_state[pk] = "record"
+                            st.rerun()
+                        return
+                else:
+                    st.error("No recording captured. Try again.")
+                    if st.button("⬅️ Try again", key=f"wr_retry2_{wid}"):
+                        st.session_state[pk] = "record"
+                        st.rerun()
+                    return
+
+            result = rs.submit_word_attempt(spoken)
+            st.session_state[rk] = {
+                "spoken": spoken,
+                "passed": result.passed,
+                "method": result.method,
+            }
+
+        saved = st.session_state[rk]
+
+        st.markdown(
+            f"<p style='text-align:center;font-size:18px;color:#555;'>"
+            f"You said: <strong>{saved['spoken']}</strong></p>",
+            unsafe_allow_html=True,
+        )
+
+        remaining_after = rs.max_word_attempts - rs.current_word_attempts
+        if saved["passed"]:
+            st.success(f"✅ Correct! ({saved['method']})")
+        elif remaining_after > 0:
+            st.warning(f"⚠️ Not quite — you have **{remaining_after}** attempt(s) left.")
+        else:
+            st.info("That's okay — let's keep going!")
+
+        if st.button("Next word ➡️", key=f"wr_next_{wid}", use_container_width=True, type="primary"):
+            for key in [pk, rk, ak, sk]:
+                st.session_state.pop(key, None)
+            st.rerun()
 
 
-def render_retry_screen(rs: ReadingSession) -> None:
-    st.info("🔁 Now try the whole sentence again!")
-    render_phrase_screen(rs)
-
+# ---------------------------------------------------------------------------
+# History & debug panels
+# ---------------------------------------------------------------------------
 
 def render_history(rs: ReadingSession) -> None:
-    with st.expander("Session history"):
+    with st.expander("📋 Session history"):
         if not rs.history:
             st.write("No attempts yet.")
             return
         rows = rs.export_history()
-        # Flatten error_breakdown dict into string for display
         for r in rows:
             r["error_breakdown"] = str(r.get("error_breakdown", {}))
         df = pd.DataFrame(rows)
         st.dataframe(df, use_container_width=True)
         st.download_button(
-            "Download as CSV",
+            "⬇️ Download CSV",
             data=df.to_csv(index=False).encode(),
             file_name="speakup_session.csv",
             mime="text/csv",
@@ -288,26 +604,35 @@ def render_history(rs: ReadingSession) -> None:
 
 
 def render_debug(rs: ReadingSession) -> None:
-    with st.expander("Debug: session internals", expanded=False):
+    with st.expander("🛠 Debug: session internals", expanded=False):
         st.write("state:", rs.state.value)
         st.write("level:", rs.level, "→", rs.level_label)
         st.write("current_phrase:", rs.current_phrase)
-        st.write("current_word_index:", rs.current_word_index)
-        st.write("current_word_attempts:", rs.current_word_attempts)
+        st.write("word_index/attempts:", rs.current_word_index, "/", rs.current_word_attempts)
         st.write("recent_phoneme_accuracy:", f"{rs.recent_phoneme_accuracy:.0%}")
-        st.write("consecutive_passes:", rs.consecutive_passes)
-        st.write("consecutive_fails:", rs.consecutive_fails)
+        st.write("consecutive_passes / fails:", rs.consecutive_passes, "/", rs.consecutive_fails)
         st.write("struggling_words:", rs._struggling_words)
-        st.write("mic_recorder_available:", mic_recorder is not None)
-        st.write("last_audio_len:", st.session_state.get("_last_audio_len"))
+        st.write("mic_available:", mic_recorder is not None)
 
         if rs._rl is not None:
-            st.write("RL Q-table (tier × accuracy_bucket × action):")
-            import numpy as np
+            st.write("RL Q-table (tier × acc_bucket=medium × action):")
             q = rs._rl.q_values
-            for t_idx in range(q.shape[0]):
-                tier_name = LEVEL_LABELS.get(t_idx + 1, str(t_idx + 1))
-                st.write(f"  {tier_name}: easier={q[t_idx,1,0]:.3f} same={q[t_idx,1,1]:.3f} harder={q[t_idx,1,2]:.3f}")
+            for t_idx, tier_name in enumerate(["Beginner", "Intermediate", "Advanced"]):
+                st.write(
+                    f"  {tier_name}: "
+                    f"easier={q[t_idx,1,0]:.3f} "
+                    f"same={q[t_idx,1,1]:.3f} "
+                    f"harder={q[t_idx,1,2]:.3f}"
+                )
+
+
+def write_debug_event(event: dict) -> None:
+    try:
+        record = {"ts": datetime.utcnow().isoformat() + "Z", **event}
+        with open(LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -318,18 +643,21 @@ rs = get_session()
 
 with st.sidebar:
     st.header("⚙️ Settings")
-    if st.button("Restart session"):
+    if st.button("🔄 Restart session", use_container_width=True):
         reset_session()
         st.rerun()
     st.markdown(f"**Level:** {_tier_badge(rs.level)}", unsafe_allow_html=True)
     st.write("**State:**", rs.state.value)
-    total_sentences = sum(len(v) for v in rs.phrases_by_level.values())
-    st.write("**Corpus size:**", total_sentences, "sentences")
-    st.write("**Phoneme accuracy (recent):**", f"{rs.recent_phoneme_accuracy:.0%}")
+    st.write(
+        "**Corpus:**",
+        sum(len(v) for v in rs.phrases_by_level.values()),
+        "sentences",
+    )
+    st.write("**Phoneme accuracy:**", f"{rs.recent_phoneme_accuracy:.0%}")
     st.markdown("---")
     st.caption(
-        "**Tiers:** 🟢 Beginner · 🟡 Intermediate · 🔴 Advanced\n\n"
-        "The RL engine automatically adjusts difficulty based on your performance."
+        "🟢 Beginner · 🟡 Intermediate · 🔴 Advanced\n\n"
+        "The RL engine adjusts difficulty based on phoneme accuracy."
     )
 
 render_header(rs)
@@ -338,11 +666,11 @@ if rs.state == State.DONE:
     st.balloons()
     st.success("🎉 All done — great reading today!")
 elif rs.state == State.SHOW_PHRASE:
-    render_phrase_screen(rs)
+    render_phrase_screen(rs, is_retry=False)
 elif rs.state == State.WORD_PRACTICE:
     render_word_screen(rs)
 elif rs.state == State.RETRY_PHRASE:
-    render_retry_screen(rs)
+    render_phrase_screen(rs, is_retry=True)
 else:
     st.write("Loading…")
 
