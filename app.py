@@ -75,48 +75,112 @@ def reset_session() -> None:
 # TTS  — Web Speech API (browser-native, no network, no autoplay restriction)
 # ---------------------------------------------------------------------------
 
-def _speak(text: str, *, auto: bool = True, button_label: str = "🔊 Play again") -> None:
-    """Embed a Web Speech API speaker inside the page.
+def _speak_with_highlight(text: str, *, auto: bool = True, font_size: int = 38) -> None:
+    """Web Speech API player that highlights each word as it is spoken.
 
-    auto=True  → speaks immediately when the component loads (once per phrase,
-                  tracked via session state so reruns don't re-trigger it).
-    Always renders a button so the user can replay manually.
+    auto=True  → speaks immediately on component load (tracked in session state
+                  so reruns don't re-fire for the same phrase).
+    Uses SpeechSynthesisUtterance onboundary (Chrome/Edge/Safari 16+;
+    degrades gracefully on Firefox — TTS still plays, just no word highlight).
     """
-    safe = _html.escape(text, quote=True)
+    words     = text.split()
+    safe_text = _html.escape(text, quote=True)
+    spans     = " ".join(
+        f'<span id="w{i}" class="word">{_html.escape(w)}</span>'
+        for i, w in enumerate(words)
+    )
     auto_js = "speakNow();" if auto else ""
+    height  = 130 + max(0, (len(words) - 4) // 3) * 55
+
     _components.html(
         f"""
-        <div style="text-align:center;font-family:sans-serif;padding:4px 0;">
+        <div style="font-family:sans-serif;text-align:center;padding:10px 6px;">
+          <div id="words-row"
+               style="font-size:{font_size}px;font-weight:700;line-height:1.55;
+                      margin-bottom:14px;">
+            {spans}
+          </div>
           <button id="sp-btn" onclick="speakNow()"
-              style="font-size:15px;padding:8px 24px;border-radius:8px;
-                     cursor:pointer;background:#1565C0;color:#fff;border:none;
-                     margin-bottom:6px;">
-            {button_label}
+              style="font-size:14px;padding:7px 22px;border-radius:8px;
+                     background:#1565C0;color:#fff;border:none;cursor:pointer;">
+            🔊 Play again
           </button>
-          <div id="sp-status" style="color:#888;font-size:13px;min-height:18px;"></div>
+          <span id="sp-status"
+                style="color:#666;font-size:13px;margin-left:12px;"></span>
         </div>
+        <style>
+          .word {{
+            display:inline-block;
+            padding:2px 5px;
+            border-radius:5px;
+            transition:background 0.08s, transform 0.08s, color 0.08s;
+          }}
+          .word.active {{
+            background:#FFD700;
+            color:#000;
+            transform:scale(1.18);
+            box-shadow:0 2px 6px rgba(0,0,0,0.25);
+          }}
+        </style>
         <script>
-          const TTS_TEXT = "{safe}";
+          const TTS_TEXT = "{safe_text}";
+          const words    = TTS_TEXT.split(' ');
+
+          function clearHL() {{
+            words.forEach((_, i) => {{
+              const el = document.getElementById('w' + i);
+              if (el) el.classList.remove('active');
+            }});
+          }}
+
+          function highlightWord(charIndex) {{
+            clearHL();
+            let count = 0;
+            for (let i = 0; i < words.length; i++) {{
+              if (charIndex >= count && charIndex < count + words[i].length) {{
+                const el = document.getElementById('w' + i);
+                if (el) el.classList.add('active');
+                break;
+              }}
+              count += words[i].length + 1;
+            }}
+          }}
+
           function speakNow() {{
             const btn  = document.getElementById('sp-btn');
             const stat = document.getElementById('sp-status');
             if (!window.speechSynthesis) {{
-              stat.textContent = '⚠ Text-to-speech not supported in this browser.';
+              stat.textContent = '⚠ TTS not supported in this browser.';
               return;
             }}
             window.speechSynthesis.cancel();
+            clearHL();
             const u = new SpeechSynthesisUtterance(TTS_TEXT);
             u.rate = 0.85;
             u.lang = 'en-US';
-            u.onstart = () => {{ stat.textContent = '🔊 Speaking…'; btn.disabled = true; }};
-            u.onend   = () => {{ stat.textContent = '✅ Done — click Ready when you are.'; btn.disabled = false; }};
-            u.onerror = (e) => {{ stat.textContent = '⚠ Playback error: ' + e.error; btn.disabled = false; }};
+            u.onstart = () => {{
+              stat.textContent = '🔊 Reading…';
+              btn.disabled = true;
+            }};
+            u.onend = () => {{
+              clearHL();
+              stat.textContent = '✅ Done — click the button below when ready.';
+              btn.disabled = false;
+            }};
+            u.onerror = (e) => {{
+              clearHL();
+              stat.textContent = '⚠ ' + e.error;
+              btn.disabled = false;
+            }};
+            u.onboundary = (ev) => {{
+              if (ev.name === 'word') highlightWord(ev.charIndex);
+            }};
             window.speechSynthesis.speak(u);
           }}
           {auto_js}
         </script>
         """,
-        height=80,
+        height=height,
     )
 
 
@@ -138,22 +202,21 @@ def _gtts_bytes(text: str) -> bytes | None:
 # ---------------------------------------------------------------------------
 
 def _record_audio(key: str) -> bytes | None:
-    """Show the mic recorder widget; return audio bytes when recording ends."""
+    """Show the mic recorder widget; return audio bytes when recording ends.
+
+    The key MUST be stable across reruns while on the same phrase/word so
+    the widget preserves its internal state (not-recording → recording → done).
+    Callers pass a key derived from the current phrase/word/attempt, which
+    changes naturally when we move to the next item.
+    """
     if mic_recorder is None:
         return None
-
-    # Append a counter so each rerun gets a fresh widget instance
-    if "_mic_ctr" not in st.session_state:
-        st.session_state["_mic_ctr"] = 0
-    st.session_state["_mic_ctr"] += 1
-    widget_key = f"{key}_{st.session_state['_mic_ctr']}"
-
     audio = mic_recorder(
         start_prompt="🎤  Tap to start recording",
         stop_prompt="⏹  Tap to stop",
         just_once=True,
         use_container_width=True,
-        key=widget_key,
+        key=key,
     )
     if audio and "bytes" in audio:
         return audio["bytes"]
@@ -296,7 +359,7 @@ def render_phrase_screen(rs: ReadingSession, is_retry: bool = False) -> None:
         auto = auto_key not in st.session_state
         if auto:
             st.session_state[auto_key] = True
-        _speak(phrase, auto=auto, button_label="🔊 Play again")
+        _speak_with_highlight(phrase, auto=auto, font_size=38)
 
         # gTTS fallback audio player (no autoplay — avoids browser Error state)
         with st.expander("🎵 Use audio file instead (if browser speech fails)"):
@@ -348,7 +411,7 @@ def render_phrase_screen(rs: ReadingSession, is_retry: bool = False) -> None:
 
         # Replay button
         with st.expander("🔊 Hear the sentence again"):
-            _speak(phrase, auto=False)
+            _speak_with_highlight(phrase, auto=False, font_size=32)
 
         # Text simulation fallback
         with st.expander("⌨️ No mic? Type your answer here"):
@@ -511,7 +574,7 @@ def render_word_screen(rs: ReadingSession) -> None:
         auto = auto_key not in st.session_state
         if auto:
             st.session_state[auto_key] = True
-        _speak(word, auto=auto, button_label="🔊 Play again")
+        _speak_with_highlight(word, auto=auto, font_size=52)
 
         st.markdown("")
         if st.button(
@@ -550,7 +613,7 @@ def render_word_screen(rs: ReadingSession) -> None:
                 st.rerun()
 
         with st.expander("🔊 Hear the word again"):
-            _speak(word, auto=False)
+            _speak_with_highlight(word, auto=False, font_size=44)
 
         with st.expander("⌨️ No mic? Type the word"):
             sim = st.text_input("", key=f"ws_input_{wid}", placeholder=f"Type '{word}'")
