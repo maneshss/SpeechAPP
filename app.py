@@ -75,13 +75,19 @@ def reset_session() -> None:
 # TTS  — Web Speech API (browser-native, no network, no autoplay restriction)
 # ---------------------------------------------------------------------------
 
+def _tts_lang() -> str:
+    return st.session_state.get("tts_lang", "en-IN")
+
+
 def _speak_with_highlight(text: str, *, auto: bool = True, font_size: int = 38) -> None:
     """Web Speech API player that highlights each word as it is spoken.
 
     auto=True  → auto-speaks on first render (via DOMContentLoaded + delay).
     Uses SpeechSynthesisUtterance onboundary (Chrome/Edge/Safari 16+).
     Includes Chrome cancel()-then-speak bug workaround (setTimeout 120 ms).
+    Language follows st.session_state["tts_lang"] (default: en-IN).
     """
+    lang = _tts_lang()
     words     = text.split()
     safe_text = _html.escape(text, quote=True)
     spans     = " ".join(
@@ -162,7 +168,7 @@ def _speak_with_highlight(text: str, *, auto: bool = True, font_size: int = 38) 
 
             const u = new SpeechSynthesisUtterance(TTS_TEXT);
             u.rate = 0.85;
-            u.lang = 'en-US';
+            u.lang = '{lang}';
             u.onstart = () => {{
               if (stat) stat.textContent = '\U0001f50a Reading…';
               if (btn)  btn.disabled = true;
@@ -756,6 +762,18 @@ with st.sidebar:
         "sentences",
     )
     st.write("**Phoneme accuracy:**", f"{rs.recent_phoneme_accuracy:.0%}")
+    st.markdown("---")
+    _LANG_OPTIONS = {
+        "🇮🇳 Indian English":    "en-IN",
+        "🇺🇸 American English":  "en-US",
+        "🇬🇧 British English":   "en-GB",
+    }
+    chosen_label = st.selectbox(
+        "🗣️ Pronunciation",
+        list(_LANG_OPTIONS.keys()),
+        index=0,
+    )
+    st.session_state["tts_lang"] = _LANG_OPTIONS[chosen_label]
     st.markdown("---")
     st.caption(
         "🟢 Beginner · 🟡 Intermediate · 🔴 Advanced\n\n"
