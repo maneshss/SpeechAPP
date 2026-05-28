@@ -78,10 +78,9 @@ def reset_session() -> None:
 def _speak_with_highlight(text: str, *, auto: bool = True, font_size: int = 38) -> None:
     """Web Speech API player that highlights each word as it is spoken.
 
-    auto=True  → speaks immediately on component load (tracked in session state
-                  so reruns don't re-fire for the same phrase).
-    Uses SpeechSynthesisUtterance onboundary (Chrome/Edge/Safari 16+;
-    degrades gracefully on Firefox — TTS still plays, just no word highlight).
+    auto=True  → auto-speaks on first render (via DOMContentLoaded + delay).
+    Uses SpeechSynthesisUtterance onboundary (Chrome/Edge/Safari 16+).
+    Includes Chrome cancel()-then-speak bug workaround (setTimeout 120 ms).
     """
     words     = text.split()
     safe_text = _html.escape(text, quote=True)
@@ -89,8 +88,12 @@ def _speak_with_highlight(text: str, *, auto: bool = True, font_size: int = 38) 
         f'<span id="w{i}" class="word">{_html.escape(w)}</span>'
         for i, w in enumerate(words)
     )
-    auto_js = "speakNow();" if auto else ""
-    height  = 130 + max(0, (len(words) - 4) // 3) * 55
+    # auto_js: wait for DOM + extra 400 ms so Chrome speech engine is warm
+    auto_js = (
+        "document.addEventListener('DOMContentLoaded', function() {"
+        " setTimeout(speakNow, 400); });"
+    ) if auto else ""
+    height = 130 + max(0, (len(words) - 4) // 3) * 55
 
     _components.html(
         f"""
@@ -103,7 +106,7 @@ def _speak_with_highlight(text: str, *, auto: bool = True, font_size: int = 38) 
           <button id="sp-btn" onclick="speakNow()"
               style="font-size:14px;padding:7px 22px;border-radius:8px;
                      background:#1565C0;color:#fff;border:none;cursor:pointer;">
-            🔊 Play again
+            \U0001f50a Play again
           </button>
           <span id="sp-status"
                 style="color:#666;font-size:13px;margin-left:12px;"></span>
@@ -124,10 +127,10 @@ def _speak_with_highlight(text: str, *, auto: bool = True, font_size: int = 38) 
         </style>
         <script>
           const TTS_TEXT = "{safe_text}";
-          const words    = TTS_TEXT.split(' ');
+          const WORDS    = TTS_TEXT.split(' ');
 
           function clearHL() {{
-            words.forEach((_, i) => {{
+            WORDS.forEach((_, i) => {{
               const el = document.getElementById('w' + i);
               if (el) el.classList.remove('active');
             }});
@@ -136,13 +139,13 @@ def _speak_with_highlight(text: str, *, auto: bool = True, font_size: int = 38) 
           function highlightWord(charIndex) {{
             clearHL();
             let count = 0;
-            for (let i = 0; i < words.length; i++) {{
-              if (charIndex >= count && charIndex < count + words[i].length) {{
+            for (let i = 0; i < WORDS.length; i++) {{
+              if (charIndex >= count && charIndex < count + WORDS[i].length) {{
                 const el = document.getElementById('w' + i);
                 if (el) el.classList.add('active');
                 break;
               }}
-              count += words[i].length + 1;
+              count += WORDS[i].length + 1;
             }}
           }}
 
@@ -150,39 +153,42 @@ def _speak_with_highlight(text: str, *, auto: bool = True, font_size: int = 38) 
             const btn  = document.getElementById('sp-btn');
             const stat = document.getElementById('sp-status');
             if (!window.speechSynthesis) {{
-              stat.textContent = '⚠ TTS not supported in this browser.';
+              if (stat) stat.textContent = '⚠ TTS not supported in this browser.';
               return;
             }}
+            // Chrome fix: unstick synthesis if it got paused
+            if (window.speechSynthesis.paused) window.speechSynthesis.resume();
             window.speechSynthesis.cancel();
-            clearHL();
+
             const u = new SpeechSynthesisUtterance(TTS_TEXT);
             u.rate = 0.85;
             u.lang = 'en-US';
             u.onstart = () => {{
-              stat.textContent = '🔊 Reading…';
-              btn.disabled = true;
+              if (stat) stat.textContent = '\U0001f50a Reading…';
+              if (btn)  btn.disabled = true;
             }};
             u.onend = () => {{
               clearHL();
-              stat.textContent = '✅ Done — click the button below when ready.';
-              btn.disabled = false;
+              if (stat) stat.textContent = '✅ Done — click the button below when ready.';
+              if (btn)  btn.disabled = false;
             }};
             u.onerror = (e) => {{
               clearHL();
-              stat.textContent = '⚠ ' + e.error;
-              btn.disabled = false;
+              if (stat) stat.textContent = '⚠ ' + e.error;
+              if (btn)  btn.disabled = false;
             }};
             u.onboundary = (ev) => {{
               if (ev.name === 'word') highlightWord(ev.charIndex);
             }};
-            window.speechSynthesis.speak(u);
+            // Chrome bug: speak() immediately after cancel() is dropped;
+            // a 120 ms delay makes it reliable.
+            setTimeout(() => window.speechSynthesis.speak(u), 120);
           }}
           {auto_js}
         </script>
         """,
         height=height,
     )
-
 
 @st.cache_data(show_spinner=False)
 def _gtts_bytes(text: str) -> bytes | None:
@@ -206,8 +212,6 @@ def _record_audio(key: str) -> bytes | None:
 
     The key MUST be stable across reruns while on the same phrase/word so
     the widget preserves its internal state (not-recording → recording → done).
-    Callers pass a key derived from the current phrase/word/attempt, which
-    changes naturally when we move to the next item.
     """
     if mic_recorder is None:
         return None
@@ -273,7 +277,7 @@ def _step_indicator(current: int) -> None:
                 f"{label}</div>",
                 unsafe_allow_html=True,
             )
-    st.write("")   # small gap
+    st.write("")
 
 
 def _render_alignment(alignment) -> None:
@@ -354,11 +358,10 @@ def render_phrase_screen(rs: ReadingSession, is_retry: bool = False) -> None:
             unsafe_allow_html=True,
         )
 
-        # Auto-speak only on the first render of this phrase's listen phase
-        auto_key = f"_auto_{phrase}"
-        auto = auto_key not in st.session_state
+        # auto=True only on the very first render (pk absent = just arrived)
+        auto = pk not in st.session_state
         if auto:
-            st.session_state[auto_key] = True
+            st.session_state[pk] = "listen"   # mark visited so reruns don't re-speak
         _speak_with_highlight(phrase, auto=auto, font_size=38)
 
         # gTTS fallback audio player (no autoplay — avoids browser Error state)
@@ -570,10 +573,9 @@ def render_word_screen(rs: ReadingSession) -> None:
             unsafe_allow_html=True,
         )
 
-        auto_key = f"_auto_w_{wid}"
-        auto = auto_key not in st.session_state
+        auto = pk not in st.session_state
         if auto:
-            st.session_state[auto_key] = True
+            st.session_state[pk] = "listen"   # mark visited so reruns don't re-speak
         _speak_with_highlight(word, auto=auto, font_size=52)
 
         st.markdown("")
