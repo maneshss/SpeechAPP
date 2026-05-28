@@ -21,8 +21,11 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+import html as _html
+
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as _components
 
 from core.session import ReadingSession, State
 from core.corpus import LEVEL_LABELS
@@ -69,18 +72,62 @@ def reset_session() -> None:
 
 
 # ---------------------------------------------------------------------------
-# TTS helper  (cached per text so gTTS is only called once per sentence)
+# TTS  — Web Speech API (browser-native, no network, no autoplay restriction)
 # ---------------------------------------------------------------------------
 
+def _speak(text: str, *, auto: bool = True, button_label: str = "🔊 Play again") -> None:
+    """Embed a Web Speech API speaker inside the page.
+
+    auto=True  → speaks immediately when the component loads (once per phrase,
+                  tracked via session state so reruns don't re-trigger it).
+    Always renders a button so the user can replay manually.
+    """
+    safe = _html.escape(text, quote=True)
+    auto_js = "speakNow();" if auto else ""
+    _components.html(
+        f"""
+        <div style="text-align:center;font-family:sans-serif;padding:4px 0;">
+          <button id="sp-btn" onclick="speakNow()"
+              style="font-size:15px;padding:8px 24px;border-radius:8px;
+                     cursor:pointer;background:#1565C0;color:#fff;border:none;
+                     margin-bottom:6px;">
+            {button_label}
+          </button>
+          <div id="sp-status" style="color:#888;font-size:13px;min-height:18px;"></div>
+        </div>
+        <script>
+          const TTS_TEXT = "{safe}";
+          function speakNow() {{
+            const btn  = document.getElementById('sp-btn');
+            const stat = document.getElementById('sp-status');
+            if (!window.speechSynthesis) {{
+              stat.textContent = '⚠ Text-to-speech not supported in this browser.';
+              return;
+            }}
+            window.speechSynthesis.cancel();
+            const u = new SpeechSynthesisUtterance(TTS_TEXT);
+            u.rate = 0.85;
+            u.lang = 'en-US';
+            u.onstart = () => {{ stat.textContent = '🔊 Speaking…'; btn.disabled = true; }};
+            u.onend   = () => {{ stat.textContent = '✅ Done — click Ready when you are.'; btn.disabled = false; }};
+            u.onerror = (e) => {{ stat.textContent = '⚠ Playback error: ' + e.error; btn.disabled = false; }};
+            window.speechSynthesis.speak(u);
+          }}
+          {auto_js}
+        </script>
+        """,
+        height=80,
+    )
+
+
 @st.cache_data(show_spinner=False)
-def _tts_bytes(text: str) -> bytes | None:
-    """Return MP3 audio bytes for text using gTTS, or None on failure."""
+def _gtts_bytes(text: str) -> bytes | None:
+    """Offline fallback: return MP3 bytes via gTTS, or None on failure."""
     try:
-        from gtts import gTTS
+        from gtts import gTTS  # type: ignore
         import io
-        tts = gTTS(text=text, lang="en", slow=True)   # slow=True for clarity
         buf = io.BytesIO()
-        tts.write_to_fp(buf)
+        gTTS(text=text, lang="en", slow=True).write_to_fp(buf)
         return buf.getvalue()
     except Exception:
         return None
@@ -244,24 +291,23 @@ def render_phrase_screen(rs: ReadingSession, is_retry: bool = False) -> None:
             unsafe_allow_html=True,
         )
 
-        tts = _tts_bytes(phrase)
-        if tts:
-            st.audio(tts, format="audio/mp3", autoplay=True)
-            st.caption(
-                "The sentence is playing. Listen carefully, then click **I'm ready** when done."
-            )
-        else:
-            st.warning(
-                "⚠️ Audio unavailable (no internet / gTTS not installed). "
-                "Read the sentence above, then click the button below."
-            )
+        # Auto-speak only on the first render of this phrase's listen phase
+        auto_key = f"_auto_{phrase}"
+        auto = auto_key not in st.session_state
+        if auto:
+            st.session_state[auto_key] = True
+        _speak(phrase, auto=auto, button_label="🔊 Play again")
 
-        col_play, col_go = st.columns(2)
-        if tts and col_play.button("🔊 Play again", use_container_width=True):
-            st.audio(tts, format="audio/mp3", autoplay=True)
-            st.rerun()
+        # gTTS fallback audio player (no autoplay — avoids browser Error state)
+        with st.expander("🎵 Use audio file instead (if browser speech fails)"):
+            mp3 = _gtts_bytes(phrase)
+            if mp3:
+                st.audio(mp3, format="audio/mp3", autoplay=False)
+            else:
+                st.caption("Audio file unavailable (requires internet + gTTS).")
 
-        if col_go.button(
+        st.markdown("")
+        if st.button(
             "✅ I heard it — I'm ready to speak!",
             use_container_width=True,
             type="primary",
@@ -301,10 +347,8 @@ def render_phrase_screen(rs: ReadingSession, is_retry: bool = False) -> None:
                 st.rerun()
 
         # Replay button
-        tts = _tts_bytes(phrase)
-        if tts:
-            with st.expander("🔊 Hear the sentence again"):
-                st.audio(tts, format="audio/mp3", autoplay=False)
+        with st.expander("🔊 Hear the sentence again"):
+            _speak(phrase, auto=False)
 
         # Text simulation fallback
         with st.expander("⌨️ No mic? Type your answer here"):
@@ -463,19 +507,14 @@ def render_word_screen(rs: ReadingSession) -> None:
             unsafe_allow_html=True,
         )
 
-        tts = _tts_bytes(word)
-        if tts:
-            st.audio(tts, format="audio/mp3", autoplay=True)
-            st.caption("Listen, then click when ready to repeat it.")
-        else:
-            st.warning("Audio unavailable — read the word above.")
+        auto_key = f"_auto_w_{wid}"
+        auto = auto_key not in st.session_state
+        if auto:
+            st.session_state[auto_key] = True
+        _speak(word, auto=auto, button_label="🔊 Play again")
 
-        col_play, col_go = st.columns(2)
-        if tts and col_play.button("🔊 Play again", key=f"wp_play_{wid}", use_container_width=True):
-            st.audio(tts, format="audio/mp3", autoplay=True)
-            st.rerun()
-
-        if col_go.button(
+        st.markdown("")
+        if st.button(
             "✅ I'm ready to say it!",
             key=f"wp_ready_{wid}",
             use_container_width=True,
@@ -510,10 +549,8 @@ def render_word_screen(rs: ReadingSession) -> None:
                 st.session_state[pk] = "result"
                 st.rerun()
 
-        tts = _tts_bytes(word)
-        if tts:
-            with st.expander("🔊 Hear the word again"):
-                st.audio(tts, format="audio/mp3", autoplay=False)
+        with st.expander("🔊 Hear the word again"):
+            _speak(word, auto=False)
 
         with st.expander("⌨️ No mic? Type the word"):
             sim = st.text_input("", key=f"ws_input_{wid}", placeholder=f"Type '{word}'")
