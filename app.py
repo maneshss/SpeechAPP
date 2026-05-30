@@ -248,13 +248,15 @@ def _speak_with_highlight(text: str, *, auto: bool = True, font_size: int = 38) 
         "document.addEventListener('DOMContentLoaded', function() {"
         " setTimeout(speakNow, 400); });"
     ) if auto else ""
-    height = 170 + max(0, (len(words) - 4) // 3) * 60
+    # Base covers: outer padding + word row + Play button + status line.
+    # Extra rows add 65 px each (≈ font_size * 1.65 line-height).
+    height = 240 + max(0, (len(words) - 4) // 3) * 65
 
     _components.html(
         f"""
         <div style="font-family:'Nunito',sans-serif;text-align:center;
                     background:white;border-radius:20px;
-                    padding:16px 12px 14px;
+                    padding:16px 12px 20px;
                     box-shadow:0 4px 18px rgba(0,0,0,.10);">
           <div id="words-row"
                style="font-size:{font_size}px;font-weight:900;line-height:1.65;
