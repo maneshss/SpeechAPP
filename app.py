@@ -80,13 +80,20 @@ def _inject_css() -> None:
             font-family: 'Nunito', sans-serif !important;
         }
 
+        /* ── Hide Streamlit chrome (toolbar / footer / main-menu) ──
+           These are not needed in a children's reading app and the
+           toolbar overlaps the top of our custom header.             */
+        header[data-testid="stHeader"]   { display: none !important; }
+        footer                           { display: none !important; }
+        #MainMenu                        { visibility: hidden !important; }
+
         /* Soft pastel gradient background */
         .stApp {
             background: linear-gradient(160deg, #e8f4fd 0%, #fff8e1 55%, #fce4ec 100%);
             min-height: 100vh;
         }
         .block-container {
-            padding-top: 0.8rem !important;
+            padding-top: 1.6rem !important;
             max-width: 760px !important;
         }
 
