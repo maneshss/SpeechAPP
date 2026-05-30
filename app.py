@@ -62,7 +62,21 @@ def _inject_css() -> None:
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap');
 
-        html, body, [class*="css"], .stMarkdown, p, li, label, span {
+        /* ── Apply Nunito ONLY to text nodes — NOT to icon spans ──
+           Streamlit's expander arrow uses a <span> with font-family:
+           'Material Icons'; overriding it renders "keyboard_arrow_right"
+           as literal text. We target explicit text containers only.      */
+        html, body,
+        .stMarkdown p, .stMarkdown li, .stMarkdown h1, .stMarkdown h2,
+        .stMarkdown h3, .stMarkdown h4, .stMarkdown h5,
+        .stMarkdown a,
+        div.stButton > button,
+        .stTextInput input,
+        .stSelectbox select,
+        [data-testid="stText"],
+        [data-testid="stCaptionContainer"] p,
+        [data-baseweb="notification"] p,
+        [data-baseweb="notification"] div {
             font-family: 'Nunito', sans-serif !important;
         }
 
@@ -130,28 +144,34 @@ def _inject_css() -> None:
             border-radius: 10px !important;
         }
 
-        /* ── Alert boxes ── */
-        .stAlert {
+        /* ── Alert / notification boxes ── */
+        [data-baseweb="notification"] {
             border-radius: 18px !important;
-            font-family: 'Nunito', sans-serif !important;
-            font-size: 18px !important;
-            font-weight: 700 !important;
+            font-size: 17px !important;
         }
 
-        /* ── Expanders ── */
-        .streamlit-expanderHeader p {
+        /* ── Expander — clean card style, arrow icon preserved ── */
+        [data-testid="stExpander"] {
+            background: #fff !important;
+            border-radius: 16px !important;
+            border: 1.5px solid #e0e0e0 !important;
+            box-shadow: 0 2px 8px rgba(0,0,0,.06) !important;
+            margin-bottom: 6px !important;
+        }
+        [data-testid="stExpander"] summary {
             font-family: 'Nunito', sans-serif !important;
             font-weight: 700 !important;
+            font-size: 15px !important;
+            padding: 10px 16px !important;
         }
 
         /* ── Sidebar — deep indigo ── */
         [data-testid="stSidebar"] {
             background: linear-gradient(180deg, #1a237e 0%, #311b92 100%) !important;
         }
-        [data-testid="stSidebar"] .stMarkdown,
-        [data-testid="stSidebar"] p,
+        [data-testid="stSidebar"] .stMarkdown p,
         [data-testid="stSidebar"] label {
-            color: #e8eaf6 !important;
+            color: #c5cae9 !important;
         }
         [data-testid="stSidebar"] h1,
         [data-testid="stSidebar"] h2,
@@ -164,7 +184,7 @@ def _inject_css() -> None:
             border-color: rgba(255,255,255,.45) !important;
         }
         [data-testid="stSidebar"] div.stButton > button:hover {
-            background: rgba(255,255,255,.30) !important;
+            background: rgba(255,255,255,.28) !important;
         }
         </style>
         """,
@@ -390,7 +410,7 @@ def _tier_badge(level: int) -> str:
 
 def _step_indicator(current: int) -> None:
     """Colorful circle step indicator: Listen → Record → Result."""
-    items = [("🎧", "Listen"), ("🎤", "Record"), ("✅", "Result")]
+    items = [("🎧", "Listen"), ("🎤", "Record"), ("🏆", "Result")]
     cols  = st.columns(3)
     for i, (col, (icon, label)) in enumerate(zip(cols, items)):
         step = i + 1
@@ -561,13 +581,6 @@ def render_phrase_screen(rs: ReadingSession, is_retry: bool = False) -> None:
         if auto:
             st.session_state[pk] = "listen"
         _speak_with_highlight(phrase, auto=auto, font_size=38)
-
-        with st.expander("🎵 Use audio file instead (if browser speech fails)"):
-            mp3 = _gtts_bytes(phrase)
-            if mp3:
-                st.audio(mp3, format="audio/mp3", autoplay=False)
-            else:
-                st.caption("Audio file unavailable (requires internet + gTTS).")
 
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
         if st.button(
@@ -1026,6 +1039,14 @@ with st.sidebar:
         "🌱 Beginner · 🌟 Intermediate · 🚀 Advanced\n\n"
         "The RL engine adapts difficulty based on phoneme accuracy."
     )
+    st.markdown("---")
+    # ── Teacher View (hidden from child) ──────────────────────────
+    teacher_mode = st.toggle("👩‍🏫 Teacher view", value=False)
+
+if teacher_mode:
+    with st.sidebar:
+        render_history(rs)
+        render_debug(rs)
 
 render_header(rs)
 
@@ -1052,5 +1073,3 @@ elif rs.state == State.RETRY_PHRASE:
 else:
     st.write("Loading…")
 
-render_history(rs)
-render_debug(rs)
