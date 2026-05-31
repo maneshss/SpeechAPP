@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# macOS
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Whisper model cache (downloaded at runtime, no need to commit)
+~/.cache/whisper/
+
+# Editor
+.vscode/
+.idea/

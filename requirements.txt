@@ -1,22 +1,26 @@
-# Core UI
+# ── Core UI ──────────────────────────────────────────────────────────────────
 streamlit>=1.30
 streamlit-mic-recorder>=0.0.8
 
-# Speech-to-text (Whisper via openai-whisper; requires ffmpeg at OS level)
-#   macOS:   brew install ffmpeg
-#   Ubuntu:  sudo apt-get install ffmpeg
-openai-whisper>=20231117
+# ── Speech-to-text ───────────────────────────────────────────────────────────
+# openai-whisper is excluded from cloud deployment: it depends on PyTorch
+# (~700 MB) which exceeds Streamlit Cloud's 1 GB RAM limit.
+# The app falls back to a typed-text input automatically when Whisper is absent.
+# To enable Whisper locally:
+#   pip install openai-whisper
+#   brew install ffmpeg   # macOS  |  sudo apt install ffmpeg  # Ubuntu
+# openai-whisper>=20231117
 
-# Text comparison + NLP
-rapidfuzz>=3.6        # fast fuzzy / Jaro-Winkler string matching
-pronouncing>=0.2.0    # CMU Pronouncing Dictionary (phonemes, syllable counts)
-wordfreq>=3.0         # word-frequency lookup (difficulty scoring)
-metaphone>=0.6        # double-metaphone phonetic encoding
+# ── NLP / phoneme matching ───────────────────────────────────────────────────
+rapidfuzz>=3.6
+pronouncing>=0.2.0
+wordfreq>=3.0
+metaphone>=0.6
 
-# Data + utilities
+# ── Data ─────────────────────────────────────────────────────────────────────
 pandas>=2.0
 numpy>=1.24
-openpyxl>=3.1         # read/write .xlsx corpus files
+openpyxl>=3.1
 
-# Optional: text-to-speech for the "hear the phrase" button
+# ── Optional TTS fallback ────────────────────────────────────────────────────
 gTTS>=2.4
