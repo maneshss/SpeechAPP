@@ -392,10 +392,14 @@ def _record_audio(key: str) -> bytes | None:
 
 
 def _do_transcribe(audio_bytes: bytes) -> str:
-    """Transcribe audio bytes; raises on failure."""
+    """Transcribe audio bytes via Groq API (cloud) or local Whisper."""
     if transcribe_bytes is None:
-        raise RuntimeError("Whisper is not installed. Run: pip install openai-whisper")
-    return transcribe_bytes(audio_bytes)
+        raise RuntimeError(
+            "No STT backend available. "
+            "Set GROQ_API_KEY in Streamlit secrets to enable voice."
+        )
+    groq_key = st.secrets.get("GROQ_API_KEY", "") if hasattr(st, "secrets") else ""
+    return transcribe_bytes(audio_bytes, groq_api_key=groq_key)
 
 
 # ---------------------------------------------------------------------------

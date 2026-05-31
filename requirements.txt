@@ -3,12 +3,13 @@ streamlit>=1.30
 streamlit-mic-recorder>=0.0.8
 
 # ── Speech-to-text ───────────────────────────────────────────────────────────
-# openai-whisper is excluded from cloud deployment: it depends on PyTorch
-# (~700 MB) which exceeds Streamlit Cloud's 1 GB RAM limit.
-# The app falls back to a typed-text input automatically when Whisper is absent.
-# To enable Whisper locally:
-#   pip install openai-whisper
-#   brew install ffmpeg   # macOS  |  sudo apt install ffmpeg  # Ubuntu
+# Cloud deployment: Groq Whisper API (free tier, no heavy dependencies).
+#   Set GROQ_API_KEY in Streamlit Cloud → App settings → Secrets.
+#   Get a free key at https://console.groq.com
+groq>=0.9.0
+
+# Local development only: uncomment to use on-device Whisper instead.
+# Requires ffmpeg: brew install ffmpeg (macOS) / apt install ffmpeg (Ubuntu)
 # openai-whisper>=20231117
 
 # ── NLP / phoneme matching ───────────────────────────────────────────────────

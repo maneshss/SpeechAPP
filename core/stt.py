@@ -1,70 +1,72 @@
-"""Speech-to-text wrapper around OpenAI Whisper.
+"""Speech-to-text via Groq Whisper API (cloud) or local openai-whisper (local).
 
-Whisper is loaded lazily on first call so importing this module stays cheap
-(useful while iterating on the UI without paying the model-load cost).
+Priority:
+  1. Groq API  — lightweight client, free tier, no local GPU/RAM needed.
+                  Requires GROQ_API_KEY in Streamlit secrets or environment.
+  2. Local Whisper — openai-whisper package + ffmpeg installed locally.
 
-If openai-whisper is not installed this module raises ImportError at import
-time so that callers can catch it with a simple try/except ImportError block
-and gracefully fall back to text input.
+Importing this module raises ImportError if neither backend is available,
+so app.py can set transcribe_bytes = None and fall back to typed input.
 """
 
 from __future__ import annotations
 
 import os
 import tempfile
-from functools import lru_cache
-import shutil
 
-# Fail fast at import time if whisper is not installed.
-# This lets app.py's  `try: from core.stt import …  except ImportError`
-# correctly set transcribe_bytes = None instead of discovering the problem
-# only when the function is first called.
+# ── Try Groq (cloud, lightweight) first ─────────────────────────────────────
 try:
-    import whisper as _whisper_check  # noqa: F401
-except ImportError as _exc:
+    from groq import Groq as _GroqClient
+    _GROQ_AVAILABLE = True
+except ImportError:
+    _GroqClient = None          # type: ignore
+    _GROQ_AVAILABLE = False
+
+# ── Try local Whisper second ─────────────────────────────────────────────────
+try:
+    import whisper as _whisper  # type: ignore
+    _LOCAL_AVAILABLE = True
+except ImportError:
+    _whisper = None             # type: ignore
+    _LOCAL_AVAILABLE = False
+
+if not _GROQ_AVAILABLE and not _LOCAL_AVAILABLE:
     raise ImportError(
-        "openai-whisper is not installed — "
-        "run `pip install openai-whisper` to enable voice transcription."
-    ) from _exc
-
-# Some environments (GUI-launched apps, services, or shells started before Homebrew
-# was installed) don't have Homebrew's bin on PATH. Whisper invokes the `ffmpeg`
-# binary via subprocess; if it's not on PATH the call will raise FileNotFoundError.
-# Try to make ffmpeg discoverable by prepending common Homebrew prefixes if needed.
-if shutil.which("ffmpeg") is None:
-    for prefix in ("/opt/homebrew/bin", "/usr/local/bin"):
-        if os.path.isdir(prefix):
-            os.environ["PATH"] = prefix + os.pathsep + os.environ.get("PATH", "")
-            if shutil.which("ffmpeg"):
-                break
+        "No STT backend found. "
+        "Install groq (`pip install groq`) and set GROQ_API_KEY, "
+        "or install openai-whisper (`pip install openai-whisper`)."
+    )
 
 
-@lru_cache(maxsize=1)
-def _load_model(model_name: str = "base.en"):
-    """Load and cache a Whisper model.
+# ── Public API ───────────────────────────────────────────────────────────────
 
-    Recommended sizes for kids' speech:
-      - "base.en"   -> fast, decent quality (good default)
-      - "small.en"  -> noticeably more accurate; ~3x slower
-      - "medium.en" -> best accuracy, slow on CPU
+def transcribe_bytes(audio_bytes: bytes, groq_api_key: str = "") -> str:
+    """Transcribe raw audio bytes to text.
+
+    Tries Groq first (if API key is available), then falls back to local
+    Whisper.
     """
-    import whisper  # imported lazily
-
-    return whisper.load_model(model_name)
-
-
-def transcribe_bytes(audio_bytes: bytes, model_name: str = "base.en") -> str:
-    """Transcribe raw audio bytes (e.g. a WAV blob from the mic recorder)."""
     if not audio_bytes:
         return ""
 
-    # Whisper wants a path, so dump bytes to a temp file.
+    # Write to a temp WAV file (both backends need a file path / file object)
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         tmp.write(audio_bytes)
         tmp_path = tmp.name
 
     try:
-        return transcribe_path(tmp_path, model_name=model_name)
+        if _GROQ_AVAILABLE:
+            key = groq_api_key or os.environ.get("GROQ_API_KEY", "")
+            if key:
+                return _groq_transcribe(tmp_path, key)
+
+        if _LOCAL_AVAILABLE:
+            return _local_transcribe(tmp_path)
+
+        raise RuntimeError(
+            "No STT backend configured. "
+            "Set GROQ_API_KEY in Streamlit secrets to enable voice."
+        )
     finally:
         try:
             os.remove(tmp_path)
@@ -72,8 +74,37 @@ def transcribe_bytes(audio_bytes: bytes, model_name: str = "base.en") -> str:
             pass
 
 
-def transcribe_path(audio_path: str, model_name: str = "base.en") -> str:
-    """Transcribe an audio file from disk."""
-    model = _load_model(model_name)
+# ── Groq backend ─────────────────────────────────────────────────────────────
+
+def _groq_transcribe(audio_path: str, api_key: str) -> str:
+    client = _GroqClient(api_key=api_key)
+    with open(audio_path, "rb") as f:
+        result = client.audio.transcriptions.create(
+            file=("recording.wav", f),
+            model="whisper-large-v3-turbo",
+            language="en",
+        )
+    return (result.text or "").strip()
+
+
+# ── Local Whisper backend ────────────────────────────────────────────────────
+
+from functools import lru_cache  # noqa: E402
+
+
+@lru_cache(maxsize=1)
+def _load_local_model(model_name: str = "base.en"):
+    import shutil
+    if shutil.which("ffmpeg") is None:
+        for prefix in ("/opt/homebrew/bin", "/usr/local/bin"):
+            if os.path.isdir(prefix):
+                os.environ["PATH"] = prefix + os.pathsep + os.environ.get("PATH", "")
+                if shutil.which("ffmpeg"):
+                    break
+    return _whisper.load_model(model_name)
+
+
+def _local_transcribe(audio_path: str, model_name: str = "base.en") -> str:
+    model  = _load_local_model(model_name)
     result = model.transcribe(audio_path, language="en", fp16=False)
     return (result.get("text") or "").strip()
