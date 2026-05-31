@@ -8,9 +8,11 @@ streamlit-mic-recorder>=0.0.8
 #   Get a free key at https://console.groq.com
 groq>=0.9.0
 
-# Local development only: uncomment to use on-device Whisper instead.
+# Local / on-device Whisper (also installed on cloud as fallback).
 # Requires ffmpeg: brew install ffmpeg (macOS) / apt install ffmpeg (Ubuntu)
-# openai-whisper>=20231117
+# On Streamlit Cloud, Groq API is used first (faster, no RAM cost);
+# Whisper is used automatically when running locally without a Groq key.
+openai-whisper>=20231117
 
 # ── NLP / phoneme matching ───────────────────────────────────────────────────
 rapidfuzz>=3.6
