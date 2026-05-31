@@ -666,7 +666,7 @@ def render_phrase_screen(rs: ReadingSession, is_retry: bool = False) -> None:
 
         if sim_text:
             spoken = sim_text
-        elif audio_buf:
+        elif audio_buf and transcribe_bytes is not None:
             try:
                 with st.spinner("🔍 Transcribing your voice…"):
                     spoken = _do_transcribe(audio_buf)
@@ -678,11 +678,21 @@ def render_phrase_screen(rs: ReadingSession, is_retry: bool = False) -> None:
                     st.rerun()
                 return
         else:
-            st.error("No recording found. Please try again.")
-            if st.button("⬅️ Go back"):
-                st.session_state[pk] = "record"
-                st.rerun()
-            return
+            # Whisper not available (cloud deployment) — ask the child to type
+            st.info(
+                "🎤 Voice recording captured! "
+                "Voice transcription is not available in this deployment — "
+                "please type what you said below."
+            )
+            typed = st.text_input(
+                "What did you say?",
+                key=f"cloud_fallback_{phrase}",
+                placeholder=f'e.g. "{phrase}"',
+            )
+            if st.button("Submit ✅", key=f"cloud_fallback_btn_{phrase}") and typed:
+                spoken = typed
+            else:
+                return
 
         result    = rs.submit_phrase_attempt(spoken)
         alignment = rs.last_alignment
@@ -884,7 +894,7 @@ def render_word_screen(rs: ReadingSession) -> None:
             with st.spinner("🔍 Checking your word…"):
                 if sim_text:
                     spoken = sim_text
-                elif audio_buf:
+                elif audio_buf and transcribe_bytes is not None:
                     try:
                         spoken = _do_transcribe(audio_buf)
                     except Exception as exc:
@@ -894,11 +904,19 @@ def render_word_screen(rs: ReadingSession) -> None:
                             st.rerun()
                         return
                 else:
-                    st.error("No recording captured. Try again.")
-                    if st.button("⬅️ Try again", key=f"wr_retry2_{wid}"):
-                        st.session_state[pk] = "record"
-                        st.rerun()
-                    return
+                    # Whisper not available — ask child to type the word
+                    st.info(
+                        "🎤 Recording captured! Please type the word you said."
+                    )
+                    typed = st.text_input(
+                        "Type the word:",
+                        key=f"cloud_word_fallback_{wid}",
+                        placeholder=f'e.g. "{word}"',
+                    )
+                    if st.button("Submit ✅", key=f"cloud_word_btn_{wid}") and typed:
+                        spoken = typed
+                    else:
+                        return
 
             result = rs.submit_word_attempt(spoken)
             st.session_state[rk] = {

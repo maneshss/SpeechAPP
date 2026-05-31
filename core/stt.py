@@ -2,6 +2,10 @@
 
 Whisper is loaded lazily on first call so importing this module stays cheap
 (useful while iterating on the UI without paying the model-load cost).
+
+If openai-whisper is not installed this module raises ImportError at import
+time so that callers can catch it with a simple try/except ImportError block
+and gracefully fall back to text input.
 """
 
 from __future__ import annotations
@@ -10,6 +14,18 @@ import os
 import tempfile
 from functools import lru_cache
 import shutil
+
+# Fail fast at import time if whisper is not installed.
+# This lets app.py's  `try: from core.stt import …  except ImportError`
+# correctly set transcribe_bytes = None instead of discovering the problem
+# only when the function is first called.
+try:
+    import whisper as _whisper_check  # noqa: F401
+except ImportError as _exc:
+    raise ImportError(
+        "openai-whisper is not installed — "
+        "run `pip install openai-whisper` to enable voice transcription."
+    ) from _exc
 
 # Some environments (GUI-launched apps, services, or shells started before Homebrew
 # was installed) don't have Homebrew's bin on PATH. Whisper invokes the `ffmpeg`
